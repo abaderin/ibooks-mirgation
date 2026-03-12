@@ -1,0 +1,4 @@
+CREATE TABLE task (
+  guid TEXT PRIMARY KEY,
+  done INTEGER NOT NULL CHECK (done IN (0, 1))
+);

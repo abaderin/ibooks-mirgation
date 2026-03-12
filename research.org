@@ -1,0 +1,1171 @@
+#+PROPERTY: header-args:clojure :session *cider-repl localhost:4001* :ns ibooks-migration.playground :results value pp
+
+* iBooks DB Schema Exploration
+- [X] [[#tables-list][List tables and describe their purpose]]
+  Tables:
+  - ZBCCLOUDSYNCVERSIONS
+    Used only in cloud sync process, nothing useful for my activity
+  - ZBKCOLLECTION
+    Each row represents a collection of books (left side menu called My Collections in the app)
+  - ZBKCOLLECTIONMEMBER
+    Many-to-many relationship table, ZBKCOLLECTION <-> ZBKLIBRARYASSET
+  - ZBKJALISCOSTATUS
+    Unknown, empty in my case. Not needed.
+  - *ZBKLIBRARYASSET*
+    *Each row presents a book. Main table for my purposes, need to learn more about its columns*
+  - Z_METADATA
+    Core Data Framework internal table. Does not contain anything useful
+  - Z_MODELCACHE
+    Same as above
+  - Z_PRIMARYKEY
+    Same as above
+- [X] [[#list-ZBKLIBRARYASSET-columns][List ZBKLIBRARYASSET columns and describe their purpose]]
+- [X] [[learn-ZCANREDOWNLOAD-column][ZCANREDOWNLOAD]]
+- [X] [[learn-ZCONTENTTYPE-column][ZCONTENTTYPE]]
+- [X] [[learn-ZSERIESCONTAINER-column][ZSERIESCONTAINER]]
+- [X] [[learn-ZASSETGUID-column][ZASSETGUID]]
+- [X] [[learn-ZTITLE-column][ZTITLE]]
+- [X] [[learn-ZPATH-column][ZPATH]]
+- [X] [[learn-ZDATASOURCEIDENTIFIER-column][ZDATASOURCEIDENTIFIER]]
+- [X] [[learn-ZEPUBID-column][ZEPUBID]]
+- [X] [[learn-ZASSETID-column][ZASSETID]]
+- [X] [[learn-ZACCOUNTID-column][ZACCOUNTID]]
+
+Migration request at the end:
+- ZDATASOURCEIDENTIFIER = 'com.apple.ibooks.datasource.ubiquity'
+- ZPATH IS NOT NULL AND (book-exists? ZPATH)
+- ZCONTENTTYPE IS IN (1, 3)
+
+#+begin_src sql
+  SELECT ZPATH, ZASSETGUID
+  FROM ZBKLIBRARYASSET
+  WHERE
+    ZDATASOURCEIDENTIFIER = 'com.apple.ibooks.datasource.ubiquity'
+    AND ZPATH IS NOT NULL
+    AND ZCONTENTTYPE IN (1, 3);
+#+end_src
+
+** List tables and describe their purpose
+:PROPERTIES:
+:CUSTOM_ID: tables-list
+:END:
+
+#+begin_src clojure
+    (let [q (h/format {:select [:name]
+                       :from :sqlite_master
+                       :where [:and
+                               [:= :type "table"]
+                               [:not-like :name "sqlite_%"]]
+                       :order-by [[:name :asc]]})]
+      (sql/query db-conn q))
+#+end_src
+
+#+RESULTS:
+: [#:sqlite_master{:name "ZBCCLOUDSYNCVERSIONS"}
+:  #:sqlite_master{:name "ZBKCOLLECTION"}
+:  #:sqlite_master{:name "ZBKCOLLECTIONMEMBER"}
+:  #:sqlite_master{:name "ZBKJALISCOSTATUS"}
+:  #:sqlite_master{:name "ZBKLIBRARYASSET"}
+:  #:sqlite_master{:name "Z_METADATA"}
+:  #:sqlite_master{:name "Z_MODELCACHE"}
+:  #:sqlite_master{:name "Z_PRIMARYKEY"}]
+
+
+** List ZBKLIBRARYASSET columns and describe their purpose
+
+:PROPERTIES:
+:CUSTOM_ID: list-ZBKLIBRARYASSET-columns
+:END:
+
+#+begin_src clojure :results output
+  (let [q ["PRAGMA table_info(ZBKLIBRARYASSET)"]]
+    (->> (sql/query db-conn q)
+         (mapv #(dissoc % :cid :pk))
+         (mapv #(update % :notnull (fn [v] (if (= 0 v) "NULLABLE" "NOT NULLABLE"))))
+         (mapv #(update % :dflt_value (fn [v] (if (nil? v) "NULL" v))))
+         print-table))
+#+end_src
+
+#+RESULTS:
+#+begin_example
+
+|                               :name |     :type | :notnull | :dflt_value |
+|-------------------------------------+-----------+----------+-------------|
+|                                Z_PK |   INTEGER | NULLABLE |        NULL |
+|                               Z_ENT |   INTEGER | NULLABLE |        NULL |
+|                               Z_OPT |   INTEGER | NULLABLE |        NULL |
+|                      ZCANREDOWNLOAD |   INTEGER | NULLABLE |        NULL |
+|                     ZCOMPUTEDRATING |   INTEGER | NULLABLE |        NULL |
+|                        ZCONTENTTYPE |   INTEGER | NULLABLE |        NULL |
+|                ZDESKTOPSUPPORTLEVEL |   INTEGER | NULLABLE |        NULL |
+|    ZDIDRUNFORYOUENDOFBOOKEXPERIENCE |   INTEGER | NULLABLE |        NULL |
+|         ZDIDWARNABOUTDESKTOPSUPPORT |   INTEGER | NULLABLE |        NULL |
+|                           ZFILESIZE |   INTEGER | NULLABLE |        NULL |
+|                         ZGENERATION |   INTEGER | NULLABLE |        NULL |
+|                      ZISDEVELOPMENT |   INTEGER | NULLABLE |        NULL |
+|                        ZISEPHEMERAL |   INTEGER | NULLABLE |        NULL |
+|                         ZISEXPLICIT |   INTEGER | NULLABLE |        NULL |
+|                         ZISFINISHED |   INTEGER | NULLABLE |        NULL |
+|                           ZISHIDDEN |   INTEGER | NULLABLE |        NULL |
+|                           ZISLOCKED |   INTEGER | NULLABLE |        NULL |
+|                              ZISNEW |   INTEGER | NULLABLE |        NULL |
+|                            ZISPROOF |   INTEGER | NULLABLE |        NULL |
+|                           ZISSAMPLE |   INTEGER | NULLABLE |        NULL |
+|                   ZISSTOREAUDIOBOOK |   INTEGER | NULLABLE |        NULL |
+|                  ZISTRACKEDASRECENT |   INTEGER | NULLABLE |        NULL |
+|           ZMETADATAMIGRATIONVERSION |   INTEGER | NULLABLE |        NULL |
+|                        ZNOTFINISHED |   INTEGER | NULLABLE |        NULL |
+|                          ZPAGECOUNT |   INTEGER | NULLABLE |        NULL |
+|                             ZRATING |   INTEGER | NULLABLE |        NULL |
+|                  ZSERIESISCLOUDONLY |   INTEGER | NULLABLE |        NULL |
+|                     ZSERIESISHIDDEN |   INTEGER | NULLABLE |        NULL |
+|                     ZSERIESNEXTFLAG |   INTEGER | NULLABLE |        NULL |
+|                      ZSERIESSORTKEY |   INTEGER | NULLABLE |        NULL |
+|                            ZSORTKEY |   INTEGER | NULLABLE |        NULL |
+|                              ZSTATE |   INTEGER | NULLABLE |        NULL |
+|                              ZTASTE |   INTEGER | NULLABLE |        NULL |
+|                 ZTASTESYNCEDTOSTORE |   INTEGER | NULLABLE |        NULL |
+|         ZLOCALONLYSERIESITEMSPARENT |   INTEGER | NULLABLE |        NULL |
+|            ZPURCHASEDANDLOCALPARENT |   INTEGER | NULLABLE |        NULL |
+|                    ZSERIESCONTAINER |   INTEGER | NULLABLE |        NULL |
+|       ZASSETDETAILSMODIFICATIONDATE | TIMESTAMP | NULLABLE |        NULL |
+|          ZBOOKHIGHWATERMARKPROGRESS |     FLOAT | NULLABLE |        NULL |
+| ZBOOKMARKSSERVERMAXMODIFICATIONDATE | TIMESTAMP | NULLABLE |        NULL |
+|                       ZCREATIONDATE | TIMESTAMP | NULLABLE |        NULL |
+|                       ZDATEFINISHED | TIMESTAMP | NULLABLE |        NULL |
+|                           ZDURATION |     FLOAT | NULLABLE |        NULL |
+|                       ZEXPECTEDDATE | TIMESTAMP | NULLABLE |        NULL |
+|            ZFILEONDISKLASTTOUCHDATE | TIMESTAMP | NULLABLE |        NULL |
+|                    ZLASTENGAGEDDATE | TIMESTAMP | NULLABLE |        NULL |
+|                       ZLASTOPENDATE | TIMESTAMP | NULLABLE |        NULL |
+|  ZLOCATIONSERVERMAXMODIFICATIONDATE | TIMESTAMP | NULLABLE |        NULL |
+|                   ZMODIFICATIONDATE | TIMESTAMP | NULLABLE |        NULL |
+|                       ZPURCHASEDATE | TIMESTAMP | NULLABLE |        NULL |
+|                    ZREADINGPROGRESS |     FLOAT | NULLABLE |        NULL |
+|                        ZRELEASEDATE | TIMESTAMP | NULLABLE |        NULL |
+|                         ZUPDATEDATE | TIMESTAMP | NULLABLE |        NULL |
+|                      ZVERSIONNUMBER |     FLOAT | NULLABLE |        NULL |
+|                          ZACCOUNTID |   VARCHAR | NULLABLE |        NULL |
+|                            ZASSETID |   VARCHAR | NULLABLE |        NULL |
+|                             ZAUTHOR |   VARCHAR | NULLABLE |        NULL |
+|                    ZBOOKDESCRIPTION |   VARCHAR | NULLABLE |        NULL |
+|             ZBOOKMARKSSERVERVERSION |   VARCHAR | NULLABLE |        NULL |
+|                           ZCOMMENTS |   VARCHAR | NULLABLE |        NULL |
+|                           ZCOVERURL |   VARCHAR | NULLABLE |        NULL |
+|                   ZCOVERWRITINGMODE |   VARCHAR | NULLABLE |        NULL |
+|               ZDATASOURCEIDENTIFIER |   VARCHAR | NULLABLE |        NULL |
+|                     ZDOWNLOADEDDSID |   VARCHAR | NULLABLE |        NULL |
+|                             ZEPUBID |   VARCHAR | NULLABLE |        NULL |
+|                           ZFAMILYID |   VARCHAR | NULLABLE |        NULL |
+|                              ZGENRE |   VARCHAR | NULLABLE |        NULL |
+|                           ZGROUPING |   VARCHAR | NULLABLE |        NULL |
+|                               ZKIND |   VARCHAR | NULLABLE |        NULL |
+|                           ZLANGUAGE |   VARCHAR | NULLABLE |        NULL |
+|              ZLOCATIONSERVERVERSION |   VARCHAR | NULLABLE |        NULL |
+|           ZPAGEPROGRESSIONDIRECTION |   VARCHAR | NULLABLE |        NULL |
+|                               ZPATH |   VARCHAR | NULLABLE |        NULL |
+|                           ZPERMLINK |   VARCHAR | NULLABLE |        NULL |
+|                      ZPURCHASEDDSID |   VARCHAR | NULLABLE |        NULL |
+|                ZSEQUENCEDISPLAYNAME |   VARCHAR | NULLABLE |        NULL |
+|                           ZSERIESID |   VARCHAR | NULLABLE |        NULL |
+|                     ZSERIESSTACKIDS |   VARCHAR | NULLABLE |        NULL |
+|                         ZSORTAUTHOR |   VARCHAR | NULLABLE |        NULL |
+|                          ZSORTTITLE |   VARCHAR | NULLABLE |        NULL |
+|                            ZSTOREID |   VARCHAR | NULLABLE |        NULL |
+|                   ZTEMPORARYASSETID |   VARCHAR | NULLABLE |        NULL |
+|                              ZTITLE |   VARCHAR | NULLABLE |        NULL |
+|         ZVERSIONNUMBERHUMANREADABLE |   VARCHAR | NULLABLE |        NULL |
+|                               ZYEAR |   VARCHAR | NULLABLE |        NULL |
+|                          ZASSETGUID |   VARCHAR | NULLABLE |        NULL |
+|                    ZSTOREPLAYLISTID |   VARCHAR | NULLABLE |        NULL |
+|                      ZCOMBINEDSTATE |   INTEGER | NULLABLE |        NULL |
+|              ZISSUPPLEMENTALCONTENT |   INTEGER | NULLABLE |        NULL |
+|   ZISDOWNLOADINGSUPPLEMENTALCONTENT |   INTEGER | NULLABLE |        NULL |
+|                      ZHASRACSUPPORT |   INTEGER | NULLABLE |        NULL |
+|          ZSUPPLEMENTALCONTENTPARENT |   INTEGER | NULLABLE |        NULL |
+|                   ZSERIESFILTERMODE |   INTEGER | NULLABLE |        NULL |
+|                  ZHASTOOMANYAUTHORS |   INTEGER | NULLABLE |        NULL |
+|                     ZSERIESSORTMODE |   INTEGER | NULLABLE |        NULL |
+|             ZMAPPEDASSETCONTENTTYPE |   INTEGER | NULLABLE |        NULL |
+|                      ZMAPPEDASSETID |   VARCHAR | NULLABLE |        NULL |
+|                             ZGENRES |      BLOB | NULLABLE |        NULL |
+|                        ZAUTHORNAMES |      BLOB | NULLABLE |        NULL |
+|                   ZCOVERASPECTRATIO |     FLOAT | NULLABLE |        NULL |
+|                      ZNARRATORCOUNT |   INTEGER | NULLABLE |        NULL |
+|                        ZAUTHORCOUNT |   INTEGER | NULLABLE |        NULL |
+|                                ZURL |   VARCHAR | NULLABLE |        NULL |
+|                      ZNARRATORNAMES |      BLOB | NULLABLE |        NULL |
+|                ZHASTOOMANYNARRATORS |   INTEGER | NULLABLE |        NULL |
+|                    ZSERIESISORDERED |   INTEGER | NULLABLE |        NULL |
+|                     ZSEQUENCENUMBER |   DECIMAL | NULLABLE |        NULL |
+|                   ZFINISHEDDATEKIND |   INTEGER | NULLABLE |        NULL |
+#+end_example
+
+** Z_PK :reviewed:
+Core Data row primary key
+** Z_ENT :reviewed:
+Core Data entity discriminator
+** Z_OPT :reviewed:
+Core Data optimistic-lock/version counter for row updates
+** ZCANREDOWNLOAD :reviewed:
+Redownload capability flag (0/1)
+** ZCOMPUTEDRATING :reviewed:
+Computed rating slot; currently always `NULL`.
+** ZCONTENTTYPE :reviewed:
+Content-type enum.
+- `1` -> book/ebook asset (mostly `.epub`, plus some store-linked entries with `ZPATH IS NULL`).
+- `3` -> PDF document asset (all `14405` rows are `.pdf`).
+- `4` -> `.ibooks` package asset (BookKit datasource; observed on 1 interactive textbook row).
+- `5` -> series container/meta entry (no local file path, datasource `BKLibraryDataSourceSeries`).
+
+I am only interested in 1 and 3 (epub and pdf)
+** ZDESKTOPSUPPORTLEVEL :reviewed:
+Desktop support capability flag (`0/1`).
+** ZDIDRUNFORYOUENDOFBOOKEXPERIENCE :reviewed:
+Internal "end-of-book experience" marker; currently always `NULL`.
+** ZDIDWARNABOUTDESKTOPSUPPORT :reviewed:
+Internal warning-shown flag; always `0` in this DB.
+** ZFILESIZE :reviewed:
+Local file size in bytes
+** ZGENERATION :reviewed:
+Internal generation/version number of the asset metadata.
+** ZISDEVELOPMENT :reviewed:
+Development/test asset flag; always `0`.
+** ZISEPHEMERAL :reviewed:
+Ephemeral/transient asset flag; always `0`.
+** ZISEXPLICIT :reviewed:
+Explicit-content flag; only sparse store rows have value (all `0` here).
+Possibly marks mature/18+ content
+** ZISFINISHED :reviewed:
+Finished-reading flag (`1` for finished, sparse in this DB).
+** ZISHIDDEN :reviewed:
+Hidden-in-library flag; always `0`.
+** ZISLOCKED :reviewed:
+Locked/protected flag; always `0`.
+** ZISNEW :reviewed:
+"New" marker (`0/1`, mostly `1`, with some `NULL`).
+** ZISPROOF :reviewed:
+Proof/review-copy flag; always `0`.
+Possibly - build for QA/editors/partners. Probability to have it in usual consumer PC tends to zero
+** ZISSAMPLE :reviewed:
+Sample-book (demo) flag; always `0`.
+I will ignore it
+** ZISSTOREAUDIOBOOK :reviewed:
+Store audiobook flag; sparse and `0` in this DB.
+Will ignore it
+** ZISTRACKEDASRECENT :reviewed:
+Whether asset participates in recents (`0/1`, mostly `0` when set).
+** ZMETADATAMIGRATIONVERSION :reviewed:
+Internal metadata migration slot; always `NULL`.
+** ZNOTFINISHED :reviewed:
+Legacy inverse-finished marker; only one row has `1`.
+** ZPAGECOUNT :reviewed:
+Page count (`0..2654` observed).
+** ZRATING :reviewed:
+User/library rating integer; always `0` in this DB.
+** ZSERIESISCLOUDONLY
+Internal series cloud-only flag; always `NULL`.
+** ZSERIESISHIDDEN :reviewed:
+Series hidden flag on sparse series rows (`0/1`).
+** ZSERIESNEXTFLAG :reviewed:
+Marker for "next in series"; only one non-null row here.
+** ZSERIESSORTKEY :reviewed:
+Sort key inside a series (very sparse, includes sentinel max integer).
+** ZSORTKEY :reviewed:
+Generic sort key; present for most rows and always `0` in this DB.
+** ZSTATE :reviewed:
+Primary lifecycle/state enum (`1/3/5` observed, mostly `3`).
+Some internal enum which maybe used to enable/disable logic / implement some FSM logic
+Not useful for migration purposes
+** ZTASTE :reviewed:
+Internal taste/recommendation signal; always `0`.
+** ZTASTESYNCEDTOSTORE :reviewed:
+Sync marker for taste signal; always `0`.
+** ZLOCALONLYSERIESITEMSPARENT :reviewed:
+Internal link to local-only series parent (`229` on one row).
+** ZPURCHASEDANDLOCALPARENT :reviewed:
+Internal link between purchased/local variants (`229` on one row).
+** ZSERIESCONTAINER :reviewed:
+Foreign-key-like pointer to series container entity (sparse integer IDs).
+It's an ID of Series. Just it. Not needed for my purposes.
+** ZASSETDETAILSMODIFICATIONDATE :reviewed:
+Asset details modification timestamp (Apple reference-date seconds).
+** ZBOOKHIGHWATERMARKPROGRESS :reviewed:
+Max progress ever reached (`0.0..1.0`), usually equals reading progress.
+** ZBOOKMARKSSERVERMAXMODIFICATIONDATE :reviewed:
+Bookmark server sync timestamp; always `NULL`.
+** ZCREATIONDATE :reviewed:
+Asset row creation timestamp (Apple reference-date seconds).
+** ZDATEFINISHED :reviewed:
+Finished date timestamp; sparse non-null.
+** ZDURATION :reviewed:
+Duration metric (for timed media); always `0.0` in this DB.
+** ZEXPECTEDDATE :reviewed:
+Expected-date placeholder; always `NULL`.
+** ZFILEONDISKLASTTOUCHDATE :reviewed:
+Last local file touch timestamp; always `NULL`.
+** ZLASTENGAGEDDATE :reviewed:
+Last engaged/interacted timestamp; sparse non-null.
+** ZLASTOPENDATE :reviewed:
+Last opened timestamp; present on all rows.
+** ZLOCATIONSERVERMAXMODIFICATIONDATE :reviewed:
+Reading-location server sync timestamp; always `NULL`.
+** ZMODIFICATIONDATE :reviewed:
+Row metadata modification timestamp.
+** ZPURCHASEDATE :reviewed:
+Purchase/import timestamp for the asset.
+** ZREADINGPROGRESS :reviewed:
+Current reading progress (`0.0..1.0`).
+** ZRELEASEDATE :reviewed:
+Store release timestamp; includes `1601-01-01` sentinel values.
+** ZUPDATEDATE :reviewed:
+Last update timestamp from store/local metadata.
+** ZVERSIONNUMBER :reviewed:
+Numeric content/version token (mostly `0.0` here).
+** ZACCOUNTID :reviewed
+Account identifier string; populated only on 3 rows.
+Seems used for bought items only
+** ZASSETID :reviewed:
+Internal asset identifier (hex-like string), unique in this DB.
+Just one more ID in this database, used in some specific cases. For me simpler to use GUID
+** ZAUTHOR :reviewed:
+Display author string.
+** ZBOOKDESCRIPTION :reviewed:
+Book description/blurb text; sparse non-null.
+** ZBOOKMARKSSERVERVERSION :reviewed:
+Bookmark sync version token; always `NULL`.
+** ZCOMMENTS :reviewed:
+Comments field; always `NULL`.
+** ZCOVERURL :reviewed:
+Remote cover URL field; always `NULL`.
+** ZCOVERWRITINGMODE :reviewed:
+Cover writing mode (`default`/`horizontal` on sparse rows).
+** ZDATASOURCEIDENTIFIER :reviewed:
+Source subsystem identifier (`ubiquity` dominates in this DB).
+** ZDOWNLOADEDDSID :reviewed:
+Downloader Apple DSID field; always `NULL`.
+** ZEPUBID :reviewed:
+EPUB package identifier; often empty string, rarely populated.
+** ZFAMILYID :reviewed:
+Family-sharing identifier; always `NULL`.
+** ZGENRE :reviewed:
+Genre text field; sparsely populated.
+** ZGROUPING :reviewed:
+Grouping key text; always `NULL`.
+** ZKIND :reviewed:
+Kind label (`ebook` on sparse rows; else `NULL`).
+** ZLANGUAGE :reviewed:
+Language code text (`en`, `en-US`, `ru` observed, mostly empty/NULL).
+** ZLOCATIONSERVERVERSION :reviewed:
+Reading-location server version token; always `NULL`.
+** ZPAGEPROGRESSIONDIRECTION :reviewed:
+Page progression direction (`default`/`ltr` on sparse rows).
+** ZPATH :reviewed:
+Local/iCloud filesystem path to content file (e.g., `.pdf`, `.epub`, `.ibooks`).
+** ZPERMLINK :reviewed:
+Permanent link field; always `NULL`.
+** ZPURCHASEDDSID :reviewed:
+Purchaser Apple DSID field; always `NULL`.
+** ZSEQUENCEDISPLAYNAME :reviewed:
+Display sequence name in series context; always `NULL`.
+** ZSERIESID :reviewed:
+Series identifier for store/series assets (sparse).
+** ZSERIESSTACKIDS :reviewed:
+Comma-separated series stack IDs; very sparse.
+** ZSORTAUTHOR :reviewed:
+Normalized author string used for sorting.
+** ZSORTTITLE :reviewed:
+Normalized title string used for sorting.
+** ZSTOREID :reviewed:
+Apple Books Store ID (sparse; aligns with store/series rows).
+** ZTEMPORARYASSETID :reviewed:
+Temporary asset identifier; always `NULL`.
+** ZTITLE :reviewed:
+Display title.
+** ZVERSIONNUMBERHUMANREADABLE :reviewed:
+Human-readable version string (sparse, e.g., `1.0`, `5.6`).
+** ZYEAR :reviewed:
+Publication year string (sparse).
+** ZASSETGUID :reviewed:
+Globally unique asset GUID (unique across all rows here).
+** ZSTOREPLAYLISTID :reviewed:
+Store playlist identifier; always `NULL`.
+** ZCOMBINEDSTATE :reviewed:
+Combined lifecycle/state enum; mirrors `ZSTATE` in this DB.
+** ZISSUPPLEMENTALCONTENT :reviewed:
+Supplemental-content flag; non-null values are `0` only.
+** ZISDOWNLOADINGSUPPLEMENTALCONTENT :reviewed:
+Supplemental download-in-progress flag; always `NULL`.
+** ZHASRACSUPPORT :reviewed:
+Internal RAC support flag; always `0`.
+** ZSUPPLEMENTALCONTENTPARENT :reviewed:
+Parent pointer for supplemental assets; always `NULL`.
+** ZSERIESFILTERMODE :reviewed:
+Series filter mode enum placeholder; always `NULL`.
+** ZHASTOOMANYAUTHORS :reviewed:
+Denormalization hint flag for author list; always `NULL`.
+** ZSERIESSORTMODE :reviewed:
+Series sort mode enum placeholder; always `NULL`.
+** ZMAPPEDASSETCONTENTTYPE :reviewed:
+Internal mapped content-type override; always `0`.
+** ZMAPPEDASSETID :reviewed:
+Internal mapped/alternate asset ID; always `NULL`.
+** ZGENRES :reviewed:
+Serialized genres blob; always `NULL`.
+** ZAUTHORNAMES :reviewed:
+Serialized author names blob; always `NULL`.
+** ZCOVERASPECTRATIO :reviewed:
+Cover aspect ratio float; always `NULL`.
+** ZNARRATORCOUNT :reviewed:
+Narrator count; always `NULL`.
+** ZAUTHORCOUNT :reviewed:
+Author count; always `NULL`.
+** ZURL :reviewed:
+Canonical/source URL field; always `NULL`.
+** ZNARRATORNAMES :reviewed:
+Serialized narrator names blob; always `NULL`.
+** ZHASTOOMANYNARRATORS :reviewed:
+Denormalization hint flag for narrator list; always `NULL`.
+** ZSERIESISORDERED :reviewed:
+Ordered-series flag placeholder; always `NULL`.
+** ZSEQUENCENUMBER :reviewed:
+Sequence number in ordered series; always `NULL`.
+** ZFINISHEDDATEKIND :reviewed:
+Enum describing finish-date provenance (`0/1` observed).
+
+
+** ZCONTENTTYPE
+:PROPERTIES:
+:CUSTOM_ID: learn-ZCONTENTTYPE-column
+:END:
+
+1. I wanna know only mapping. Without details
+
+#+begin_src clojure :results output
+  (let [q (h/format {:select [:ZCONTENTTYPE
+                              [[:COUNT :ZCONTENTTYPE] :CNT]]
+                     :from [:ZBKLIBRARYASSET]
+                     :group-by [:ZCONTENTTYPE]})]
+    (->> (sql/query db-conn q)
+         print-table))
+#+end_src
+
+#+RESULTS:
+: 
+: | :ZBKLIBRARYASSET/ZCONTENTTYPE |  :CNT |
+: |-------------------------------+-------|
+: |                             1 |   220 |
+: |                             3 | 14417 |
+: |                             4 |     1 |
+: |                             5 |     3 |
+
+2. 5 files of ZCONTENTTYPE = 1 (epub and (???) ibooks)
+
+#+begin_src clojure :results output
+  (let [q (h/format {:select [:ZPATH]
+                     :from [:ZBKLIBRARYASSET]
+                     :where [:and
+                             [:= :ZCONTENTTYPE 1]
+                             [:is-not :ZPATH nil]]
+                     :limit 5})]
+    (->> (sql/query db-conn q)
+         print-table))
+#+end_src
+
+#+RESULTS:
+: 
+: |                                                                                                      :ZBKLIBRARYASSET/ZPATH |
+: |-----------------------------------------------------------------------------------------------------------------------------|
+: |                         /Users/anton/Library/Containers/com.apple.BKAgentService/Data/Documents/iBooks/Books/881256329.epub |
+: |                      /Users/anton/Library/Containers/com.apple.BKAgentService/Data/Documents/iBooks/Books/1581182804.ibooks |
+: | /Users/anton/Library/Mobile Documents/iCloud~com~apple~iBooks/Documents/Том 10 Братья Карамазовы Неоконченное ссвпт-10.epub |
+: |                    /Users/anton/Library/Mobile Documents/iCloud~com~apple~iBooks/Documents/Nigel Mansell Autobiography.epub |
+: |                           /Users/anton/Library/Mobile Documents/iCloud~com~apple~iBooks/Documents/F for Fun and Profit.epub |
+
+3. 5 files of ZCONTENTTYPE = 3 (pdf)
+
+#+begin_src clojure :results output
+  (let [q (h/format {:select [:ZPATH]
+                     :from [:ZBKLIBRARYASSET]
+                     :where [:and
+                             [:= :ZCONTENTTYPE 3]
+                             [:is-not :ZPATH nil]]
+                     :limit 5})]
+    (->> (sql/query db-conn q)
+         print-table))
+#+end_src
+
+#+RESULTS:
+: 
+: |                                                                               :ZBKLIBRARYASSET/ZPATH |
+: |------------------------------------------------------------------------------------------------------|
+: |     /Users/anton/Library/Mobile Documents/iCloud~com~apple~iBooks/Documents/В мире науки 2006-08.pdf |
+: |                /Users/anton/Library/Mobile Documents/iCloud~com~apple~iBooks/Documents/nk2010-10.pdf |
+: |       /Users/anton/Library/Mobile Documents/iCloud~com~apple~iBooks/Documents/Хакер Спец 2004 46.pdf |
+: | /Users/anton/Library/Mobile Documents/iCloud~com~apple~iBooks/Documents/Идеи вашего дома 2015 03.pdf |
+: |    /Users/anton/Library/Mobile Documents/iCloud~com~apple~iBooks/Documents/Наука и жизнь 1977-05.pdf |
+
+
+4. ZCONTENTTYPE = 4 (ibooks again, maybe some interactive book)
+
+#+begin_src clojure :results output
+  (let [q (h/format {:select [:ZPATH]
+                     :from [:ZBKLIBRARYASSET]
+                     :where [:and
+                             [:= :ZCONTENTTYPE 4]
+                             [:is-not :ZPATH nil]]})]
+    (->> (sql/query db-conn q)
+         print-table))
+#+end_src
+
+#+RESULTS:
+: 
+: |                                                                                   :ZBKLIBRARYASSET/ZPATH |
+: |----------------------------------------------------------------------------------------------------------|
+: | /Users/anton/Library/Containers/com.apple.BKAgentService/Data/Documents/iBooks/Books/1581183203 1.ibooks |
+
+
+5. ZCONTENTTYPE = 5 (nothing)
+
+#+begin_src clojure :results output
+  (let [q (h/format {:select [:ZPATH]
+                     :from [:ZBKLIBRARYASSET]
+                     :where [:and
+                             [:= :ZCONTENTTYPE 5]
+                             [:is-not :ZPATH nil]]})]
+    (->> (sql/query db-conn q)
+         print-table))
+#+end_src
+
+#+RESULTS:
+
+
+** ZCANREDOWNLOAD
+:PROPERTIES:
+:CUSTOM_ID: learn-ZCANREDOWNLOAD-column
+:END:
+
+  Seems that `0` doesn't mean that file is not exists on the disk. Nothing
+  surprising here, of course. It means only that remote source is not
+  available anymore.
+
+** ZCANREDOWNLOAD=0 - all unreadable
+
+What is it - unreadable? epub - directory, pdf - file. both must exist
+
+#+begin_src clojure
+  (let [q (h/format {:select [:ZPATH]
+                     :from :ZBKLIBRARYASSET
+                     :where [:= :ZCANREDOWNLOAD 0]})]
+    (->> (sql/query db-conn q)
+         (map :ZBKLIBRARYASSET/ZPATH)
+         (filter #(not (nil? %)))
+         ))
+
+#+end_src
+
+#+RESULTS:
+: ("/Users/anton/Library/Containers/com.apple.BKAgentService/Data/Documents/iBooks/Books/881256329.epub"
+:  "/Users/anton/Library/Containers/com.apple.BKAgentService/Data/Documents/iBooks/Books/1581183203 1.ibooks"
+:  "/Users/anton/Library/Containers/com.apple.BKAgentService/Data/Documents/iBooks/Books/1581182804.ibooks")
+
+#+begin_src clojure
+  (let [q (h/format {:select [:ZPATH]
+                     :from :ZBKLIBRARYASSET})]
+    (->> (sql/query db-conn q)
+         (map :ZBKLIBRARYASSET/ZPATH)
+         (filter #(not (nil? %)))
+         (filter #(= "ibooks" (-> % file-name file-extension)))))
+
+#+end_src
+
+#+RESULTS:
+: ("/Users/anton/Library/Containers/com.apple.BKAgentService/Data/Documents/iBooks/Books/1581183203 1.ibooks"
+:  "/Users/anton/Library/Containers/com.apple.BKAgentService/Data/Documents/iBooks/Books/1581182804.ibooks")
+
+** all books with ZCANREDOWNLOAD=1 could be read as file on disk
+
+#+begin_src clojure
+  ;; all epubs - directories
+  (
+#+end_src
+
+#+begin_src clojure
+  (let [q (h/format {:select [:ZPATH]
+                     :from :ZBKLIBRARYASSET
+                     :where [:= :ZCANREDOWNLOAD 1]})]
+    (->> (sql/query db-conn q)
+         (map :ZBKLIBRARYASSET/ZPATH)
+         first
+         ))
+#+end_src
+
+#+RESULTS:
+: "/Users/anton/Library/Mobile Documents/iCloud~com~apple~iBooks/Documents/В мире науки 2006-08.pdf"
+
+
+** ZSERIESCONTAINER
+:PROPERTIES:
+:CUSTOM_ID: learn-ZSERIESCONTAINER-column
+:END:
+
+#+begin_src clojure :results output
+    (let [q (h/format {:select [:ZSERIESCONTAINER
+                                [[:COUNT :*] :CNT]]
+                       :from :ZBKLIBRARYASSET
+                       :group-by [:ZSERIESCONTAINER]
+                       :order-by [[:CNT :DESC]]})]
+      (->> (sql/query db-conn q)
+           print-table))
+
+#+end_src
+
+#+RESULTS:
+: 
+: | :ZBKLIBRARYASSET/ZSERIESCONTAINER |  :CNT |
+: |-----------------------------------+-------|
+: |                                   | 14604 |
+: |                               229 |    24 |
+: |                                16 |     7 |
+: |                                19 |     1 |
+
+#+begin_src clojure :results output
+  (let [q (h/format {:select [:ZTITLE]
+                     :from :ZBKLIBRARYASSET
+                     :where [:= :ZSERIESCONTAINER 229]})]
+    (->> (sql/query db-conn q)
+         print-table))
+#+end_src
+
+#+RESULTS:
+#+begin_example
+
+|                         :ZBKLIBRARYASSET/ZTITLE |
+|-------------------------------------------------|
+|               Develop in Swift Data Collections |
+|                   Develop in Swift Fundamentals |
+|               Develop in Swift AP CS Principles |
+|     Develop in Swift Fundamentals Teacher Guide |
+| Develop in Swift Data Collections Teacher Guide |
+|               Develop in Swift Data Collections |
+|                   Develop in Swift Explorations |
+|     Develop in Swift Explorations Teacher Guide |
+| Develop in Swift AP CS Principles Teacher Guide |
+| Develop in Swift AP CS Principles Teacher Guide |
+|                   Develop in Swift Fundamentals |
+|                   Develop in Swift Fundamentals |
+|               Develop in Swift Data Collections |
+|                   Develop in Swift Explorations |
+| Develop in Swift Data Collections Teacher Guide |
+| Develop in Swift AP CS Principles Teacher Guide |
+|               Develop in Swift AP CS Principles |
+|     Develop in Swift Explorations Teacher Guide |
+| Develop in Swift Data Collections Teacher Guide |
+|     Develop in Swift Fundamentals Teacher Guide |
+|     Develop in Swift Explorations Teacher Guide |
+|               Develop in Swift AP CS Principles |
+|                   Develop in Swift Explorations |
+|     Develop in Swift Fundamentals Teacher Guide |
+#+end_example
+
+#+begin_src clojure :results output
+  (let [q (h/format {:select [:ZTITLE]
+                     :from :ZBKLIBRARYASSET
+                     :where [:= :ZSERIESCONTAINER 16]})]
+    (->> (sql/query db-conn q)
+         print-table))
+#+end_src
+
+#+RESULTS:
+#+begin_example
+
+|             :ZBKLIBRARYASSET/ZTITLE |
+|-------------------------------------|
+| E. O. Wilson’s Life on Earth Unit 1 |
+| E. O. Wilson’s Life on Earth Unit 3 |
+| E. O. Wilson’s Life on Earth Unit 6 |
+| E. O. Wilson’s Life on Earth Unit 5 |
+| E. O. Wilson’s Life on Earth Unit 2 |
+| E. O. Wilson’s Life on Earth Unit 4 |
+| E. O. Wilson’s Life on Earth Unit 7 |
+#+end_example
+
+#+begin_src clojure :results output
+  (let [q (h/format {:select [:ZTITLE]
+                     :from :ZBKLIBRARYASSET
+                     :where [:= :ZSERIESCONTAINER 19]})]
+    (->> (sql/query db-conn q)
+         print-table))
+#+end_src
+
+#+RESULTS:
+: 
+: |                    :ZBKLIBRARYASSET/ZTITLE |
+: |--------------------------------------------|
+: | The Swift Programming Language (Swift 5.7) |
+
+
+** ZTITLE
+:PROPERTIES:
+:CUSTOM_ID: learn-ZTITLE-column
+:END:
+
+0. get a column description
+
+#+begin_src clojure :results output
+    (let [q ["PRAGMA table_info(ZBKLIBRARYASSET)"]]
+    (->> (sql/query db-conn q)
+         (filter #(= "ZTITLE" (:name %)))
+         print-table))
+#+end_src
+
+#+RESULTS:
+: 
+: | :cid |  :name |   :type | :notnull | :dflt_value | :pk |
+: |------+--------+---------+----------+-------------+-----|
+: |   82 | ZTITLE | VARCHAR |        0 |             |   0 |
+
+1. Not every row contains not null
+
+#+begin_src clojure :results output
+  (let [q (h/format {:select [[[:COUNT :Z_PK] :CNT]]
+                     :from [:ZBKLIBRARYASSET]
+                     :where [:is :ZTITLE :NULL]})]
+    (->> (sql/query db-conn q)
+         print-table))
+#+end_src
+
+#+RESULTS:
+: 
+: | :CNT |
+: |------|
+: |    2 |
+
+#+begin_src clojure :results output
+  (let [q (h/format {:select [:ZPATH]
+                     :from [:ZBKLIBRARYASSET]
+                     :where [:is :ZTITLE :NULL]})]
+    (->> (sql/query db-conn q)
+         print-table))
+#+end_src
+
+#+RESULTS:
+: 
+: |                                                                                                                                    :ZBKLIBRARYASSET/ZPATH |
+: |-----------------------------------------------------------------------------------------------------------------------------------------------------------|
+: |                                    /Users/anton/Library/Mobile Documents/iCloud~com~apple~iBooks/Documents/Petricek Trelford -- F Deep Dives -- 2014.epub |
+: | /Users/anton/Library/Mobile Documents/iCloud~com~apple~iBooks/Documents/J Manning P Buttfield-Addison T Nugent - Swift Development with Cocoa - 2014.epub |
+
+2. and these books are existing on disk
+
+#+begin_src clojure
+  (book-exists? "/Users/anton/Library/Mobile Documents/iCloud~com~apple~iBooks/Documents/Petricek Trelford -- F Deep Dives -- 2014.epub")
+#+end_src
+
+#+RESULTS:
+: true
+
+#+begin_src clojure
+  (book-exists? "/Users/anton/Library/Mobile Documents/iCloud~com~apple~iBooks/Documents/J Manning P Buttfield-Addison T Nugent - Swift Development with Cocoa - 2014.epub")
+#+end_src
+
+#+RESULTS:
+: true
+
+3. No books with empty ZTITLE (ZTITLE = '')
+
+#+begin_src clojure :results output
+  (let [q (h/format {:select [[[:COUNT :ZTITLE] :CNT]]
+                     :from [:ZBKLIBRARYASSET]
+                     :where [:is :ZTITLE ""]})]
+    (->> (sql/query db-conn q)
+         print-table))
+#+end_src
+
+#+RESULTS:
+: 
+: | :CNT |
+: |------|
+: |    0 |
+
+Finally - this field is not interesting to me
+
+
+** ZASSETGUID
+:PROPERTIES:
+:CUSTOM_ID: learn-ZASSETGUID-column
+:END:
+
+0. get column description
+
+#+begin_src clojure :results output
+  (let [q ["PRAGMA table_info(ZBKLIBRARYASSET)"]]
+    (->> (sql/query db-conn q)
+         (filter #(= "ZASSETGUID" (:name %)))
+         print-table))
+#+end_src
+
+#+RESULTS:
+: 
+: | :cid |      :name |   :type | :notnull | :dflt_value | :pk |
+: |------+------------+---------+----------+-------------+-----|
+: |   85 | ZASSETGUID | VARCHAR |        0 |             |   0 |
+
+1. it can be null. every row has it? YES
+
+#+begin_src clojure :results output
+    (let [q (h/format {:select [[[:COUNT :Z_PK] :CNT]]
+                       :from [:ZBKLIBRARYASSET]
+                       :where [:is :ZASSETGUID :NULL]})]
+      (->> (sql/query db-conn q)
+           print-table))
+#+end_src
+
+#+RESULTS:
+: 
+: | :CNT |
+: |------|
+: |    0 |
+
+#+begin_src clojure :results output
+  (let [q (h/format {:select [:ZASSETGUID]
+                     :from [:ZBKLIBRARYASSET]
+                     :limit 10})]
+    (->> (sql/query db-conn q) print-table))
+
+#+end_src
+
+#+RESULTS:
+#+begin_example
+
+|          :ZBKLIBRARYASSET/ZASSETGUID |
+|--------------------------------------|
+| FD3CD1DA-B680-40ED-8E23-01FEAA0136F8 |
+| F9214C95-D895-464D-9AAA-779F39E027C0 |
+| 5A80C4F0-CA64-4C74-9F73-8E6BD076DBE9 |
+| A08F942B-7258-4895-BA99-A02EC830DAE7 |
+| A25E68A3-F0D8-46B2-9833-FDD42E636192 |
+| 4421D3BA-7439-4478-B6A5-65E9A71C599E |
+| 57C5B864-6AFE-4B99-A935-CEB1DFCB0735 |
+| BA0D312F-9411-4123-888C-F8CDA92307F9 |
+| 6919B995-FC6C-4FFE-ADE3-5912D2310F6F |
+| 97C2C8AD-5D84-476E-A83D-12BBB2A3445F |
+#+end_example
+
+2. and every ZASSETGUID could be parsed? YES
+
+#+begin_src clojure :results output
+  (let [q (h/format {:select [:ZASSETGUID]
+                     :from [:ZBKLIBRARYASSET]})]
+    (->> (sql/query db-conn q)
+         (map :ZBKLIBRARYASSET/ZASSETGUID)
+         (map parse-uuid)
+         (reduce #(if %2
+                    (update %1 :valid inc)
+                    (update %1 :invalid inc))
+                 {:valid 0 :invalid 0})
+         pprint))
+#+end_src
+
+#+RESULTS:
+: {:valid 14641, :invalid 0}
+
+
+** ZPATH
+:PROPERTIES:
+:CUSTOM_ID: learn-ZPATH-column
+:END:
+
+1. scheme
+
+#+begin_src clojure :results output
+  (let [q ["PRAGMA table_info(ZBKLIBRARYASSET)"]]
+    (->> (sql/query db-conn q)
+         (filter #(= "ZPATH" (:name %)))
+         print-table))
+#+end_src
+
+#+RESULTS:
+: 
+: | :cid | :name |   :type | :notnull | :dflt_value | :pk |
+: |------+-------+---------+----------+-------------+-----|
+: |   72 | ZPATH | VARCHAR |        0 |             |   0 |
+
+2. how many nulls?
+
+#+begin_src clojure :results output
+    (let [q (h/format {:select [[[:COUNT :Z_PK] :cnt]]
+                       :from [:ZBKLIBRARYASSET]
+                       :where [:= :ZPATH :NULL]})]
+      (->> (sql/query db-conn q)
+           print-table))
+#+end_src
+
+#+RESULTS:
+: 
+: | :cnt |
+: |------|
+: |    0 |
+
+#+begin_src clojure :results output
+    (let [q (h/format {:select [[[:COUNT :Z_PK] :cnt]]
+                       :from [:ZBKLIBRARYASSET]
+                       :where [:is :ZPATH nil]})]
+      (->> (sql/query db-conn q)
+           print-table))
+#+end_src
+
+#+RESULTS:
+: 
+: | :cnt |
+: |------|
+: |   32 |
+
+
+3. what file extensions?
+
+#+begin_src clojure
+  (let [q (h/format {:select [:ZPATH]
+                     :from [:ZBKLIBRARYASSET]
+                     :where [:is-not :ZPATH nil]})
+        safe-inc (fn [v] (if (int? v) (inc v) 1))]
+    (->> (sql/query db-conn q)
+         (map :ZBKLIBRARYASSET/ZPATH)
+         (map file-name)
+         (map file-extension)
+         (reduce #(update %1 %2 safe-inc) {})))
+#+end_src
+
+#+RESULTS:
+: {"epub" 190, "ibooks" 2, "pdf" 14417}
+
+4. how many books really exists if ZPATH is not null and ZCANREDOWNLOAD = 1? EVERY!
+
+#+begin_src clojure
+  (let [q (h/format {:select [:ZPATH]
+           :from [:ZBKLIBRARYASSET]
+           :where [:and
+                   [:is-not :ZPATH nil]
+                   [:= :ZCANREDOWNLOAD 1]]})
+        safe-inc (fn [v] (if (int? v) (inc v) 1))]
+    (->> (sql/query db-conn q)
+         (map :ZBKLIBRARYASSET/ZPATH)
+         (pmap book-exists?)
+         (every? true?)))
+#+end_src
+
+#+RESULTS:
+: true
+
+
+** ZDATASOURCEIDENTIFIER
+:PROPERTIES:
+:CUSTOM_ID: learn-ZDATASOURCEIDENTIFIER-column
+:END:
+
+1. schema
+
+#+begin_src clojure :results output
+  (let [q ["PRAGMA table_info(ZBKLIBRARYASSET)"]]
+    (->> (sql/query db-conn q)
+         (filter #(= "ZDATASOURCEIDENTIFIER" (:name %)))
+         print-table))
+#+end_src
+
+#+RESULTS:
+: 
+: | :cid |                 :name |   :type | :notnull | :dflt_value | :pk |
+: |------+-----------------------+---------+----------+-------------+-----|
+: |   62 | ZDATASOURCEIDENTIFIER | VARCHAR |        0 |             |   0 |
+
+2. what values?
+
+#+begin_src clojure :results output
+  (let [q (h/format {:select [:ZDATASOURCEIDENTIFIER
+                              [[:COUNT :ZDATASOURCEIDENTIFIER] :CNT]]
+                     :from [:ZBKLIBRARYASSET]
+                     :group-by [:ZDATASOURCEIDENTIFIER]
+                     :order-by [[:CNT :DESC]]})]
+    (->> (sql/query db-conn q) print-table))
+#+end_src
+
+#+RESULTS:
+: 
+: |                       :ZBKLIBRARYASSET/ZDATASOURCEIDENTIFIER |  :CNT |
+: |--------------------------------------------------------------+-------|
+: |                         com.apple.ibooks.datasource.ubiquity | 14606 |
+: |                   com.apple.ibooks.BKLibraryDataSourceSeries |    34 |
+: | com.apple.ibooks.plugin.Bookshelf.platformDataSource.BookKit |     1 |
+
+Make sense to filter by ZDATASOURCEIDENTIFIER = 'com.apple.ibooks.datasource.ubiquity'
+in my migration request
+
+
+
+** ZEPUBID
+:PROPERTIES:
+:CUSTOM_ID: learn-CUSTOM-column
+:END:
+
+1. How many epubs I have and how many of them have ZEPUBID? 190 EPUBs, 0 with ZEPUBID IS NULL
+
+#+begin_src clojure
+  (let [q (h/format {:select [[[:COUNT :ZEPUBID] :CNT]]
+                   :from [:ZBKLIBRARYASSET]
+                   :where [:like :ZPATH "%.epub"]})]
+
+  (->> (sql/query db-conn q)))
+p#+end_src
+
+#+RESULTS:
+: [{:CNT 190}]
+
+#+begin_src clojure
+(let [safe-inc (fn [v] (if v (inc v) 1))
+      q (h/format {:select [:ZPATH :ZEPUBID]
+                   :from [:ZBKLIBRARYASSET]
+                   :where [:is-not :ZPATH nil]})]
+  (->> (sql/query db-conn q)
+       (filter #(= "epub" (-> % :ZBKLIBRARYASSET/ZPATH file-name file-extension)))
+       (map :ZBKLIBRARYASSET/ZEPUBID)
+       (filter #(= nil %))
+       count))
+#+end_src
+
+#+RESULTS:
+: 0
+
+
+** ZASSETID
+:PROPERTIES:
+:CUSTOM_ID: learn-ZASSETID-column
+:END:
+
+1. how is it represented? just example
+
+#+begin_src clojure :results output
+  (let [q (h/format {:select [:ZASSETID]
+                   :from [:ZBKLIBRARYASSET]
+                   :limit 5})]
+  (->> (sql/query db-conn q)
+       print-table))
+#+end_src
+
+#+RESULTS:
+: 
+: |        :ZBKLIBRARYASSET/ZASSETID |
+: |----------------------------------|
+: | 0002669132003FC3DE2FA288665A12EB |
+: | 000420A13412ABA2195A81C10E2F0874 |
+: | 0004F8B61533EB838EF4D8F4716B67E5 |
+: | 00086231DCCD75E131A22F9CC6197FC9 |
+: | 000AC17130B8CA9F49ECFEEC405B80EB |
+
+2. is it mandatory? check DDL
+
+#+begin_src clojure :results output
+  (let [q ["PRAGMA table_info(ZBKLIBRARYASSET)"]]
+    (->> (sql/query db-conn q)
+         (filter #(= "ZASSETID" (:name %)))
+         print-table))
+#+end_src
+
+#+RESULTS:
+: 
+: | :cid |    :name |   :type | :notnull | :dflt_value | :pk |
+: |------+----------+---------+----------+-------------+-----|
+: |   55 | ZASSETID | VARCHAR |        0 |             |   0 |
+
+3. how many rows at all and how many of them have this field? ALL have it
+
+#+begin_src clojure
+  (let [q (h/format {:select [:ZASSETID]
+                   :from [:ZBKLIBRARYASSET]})]
+  (->> (sql/query db-conn q)
+       (map :ZBKLIBRARYASSET/ZASSETID)
+       (every? string?)))
+#+end_src
+
+#+RESULTS:
+: true
+
+
+** ZACCOUNTID
+:PROPERTIES:
+:CUSTOM_ID: learn-ZACCOUNTID-column
+:END:
+
+Seems that this field used only for bought items
+
+#+begin_src clojure
+  (let [q (h/format {:select [:ZACCOUNTID]
+                     :from [:ZBKLIBRARYASSET]})]
+    (->> (sql/query db-conn q)
+         (map :ZBKLIBRARYASSET/ZACCOUNTID)
+         (filter string?)))
+#+end_src
+
+#+RESULTS:
+: ("baderin.anton@yandex.ru"
+:  "baderin.anton@yandex.ru"
+:  "baderin.anton@yandex.ru")
+
+
+* Pipeline
+
+- [X] get all books from ibooks sqlite db
+  - [X] get-books function only needed with signature db-connection -> Seq[Map{:ZPATH :ZASSETGUID}]
+- [X] implement migrator db initialization and migration
+- [-] several steps here:
+  - [ ] split Seq and push each into output-ch separately, while listening cmd-ch same time
+  - [X] convert db entity into task entity
+  - [X] check task was not performed yet
+  - [X] check file exists (book-exists?)
+  - [ ] if all conditions are met - push it into output sh
+- [ ] throttle tasks based on local storage consumption
+- [-] prepare book for copying
+  - [X] download from icloud
+  - [ ] prepare epub
+- [ ] copy book to remote storage
+- [-] finalize
+  - [ ] validate (md5)
+  - [X] evict
+  - [ ] free space through callback in task
+  - [ ] upsert record in migrator db (task-done!)
+
+** PDF files examples
+
+#+begin_src clojure :results output
+  (let [q (h/format {:select [:ZPATH]
+                     :from [:ZBKLIBRARYASSET]
+                     :where [:like :ZPATH "%.pdf"]
+                     :limit 10})]
+    (->> (sql/query db-conn q) print-table))
+#+end_src
+
+#+RESULTS:
+#+begin_example
+
+|                                                                                                                                    :ZBKLIBRARYASSET/ZPATH |
+|-----------------------------------------------------------------------------------------------------------------------------------------------------------|
+|                                                          /Users/anton/Library/Mobile Documents/iCloud~com~apple~iBooks/Documents/В мире науки 2006-08.pdf |
+|                                                                     /Users/anton/Library/Mobile Documents/iCloud~com~apple~iBooks/Documents/nk2010-10.pdf |
+|                                                            /Users/anton/Library/Mobile Documents/iCloud~com~apple~iBooks/Documents/Хакер Спец 2004 46.pdf |
+|                                                      /Users/anton/Library/Mobile Documents/iCloud~com~apple~iBooks/Documents/Идеи вашего дома 2015 03.pdf |
+|                                                         /Users/anton/Library/Mobile Documents/iCloud~com~apple~iBooks/Documents/Наука и жизнь 1977-05.pdf |
+| /Users/anton/Library/Mobile Documents/iCloud~com~apple~iBooks/Documents/Коллатц Л - Задачи на собственные значения с техническими приложениями - 1968.pdf |
+|      /Users/anton/Library/Mobile Documents/iCloud~com~apple~iBooks/Documents/Principles and Applications of NanoMEMS Physics - Hector J De Los Santos.pdf |
+|                                              /Users/anton/Library/Mobile Documents/iCloud~com~apple~iBooks/Documents/Популярная механика №12 182 2017.pdf |
+|                                                     /Users/anton/Library/Mobile Documents/iCloud~com~apple~iBooks/Documents/Popular_Mechanics_10_1999.pdf |
+|                                                                       /Users/anton/Library/Mobile Documents/iCloud~com~apple~iBooks/Documents/1980_01.pdf |
+#+end_example
+
+
+* Settings
+
+# Local Variables:
+# org-confirm-babel-evaluate: nil
+# cider-show-error-buffer: t
+# cider-auto-select-error-buffer: t
+# End:
+
