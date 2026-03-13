@@ -1,17 +1,19 @@
 (ns ibooks-migration.db.migrator
   (:require [migratus.core :as migratus]
+            [ibooks-migration.db.core :as db]
             [next.jdbc :as jdbc]
             [next.jdbc.sql :as sql]
             [honey.sql :as h]))
 
-(def config {:store :database
-             :db {:dbtype "sqlite"
-                  :dbname "db.sqlite"}})
+(defn migratus-config [path]
+  {:store :database
+   :db (db/sqlite-db-spec path)})
 
-(def db-dsn (format "jdbc:sqlite:%s" "db.sqlite"))
-(def db-conn (jdbc/get-connection db-dsn))
+(defn migrate! [path]
+  (migratus/migrate (migratus-config path)))
 
-(migratus/migrate config)
+(defn connect [path]
+  (jdbc/get-connection (db/sqlite-jdbc-url path)))
 
 (defn task-done! [db {:keys [guid]}]
   (let [q (h/format {:insert-into [:task]
