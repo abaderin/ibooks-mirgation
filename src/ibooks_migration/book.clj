@@ -31,6 +31,13 @@
       "ibooks" (valid-ibooks? path)
       (throw (ex-info "Invalid book extension" {:extension ext})))))
 
+(defn fs-size [path]
+  (let [f (io/file path)]
+    (cond
+      (.isFile f) (.length f)
+      (.isDirectory f) (reduce + 0 (map (comp fs-size str) (.listFiles f)))
+      :else (throw (ex-info "Path does not exist" {:path path})))))
+
 (defn md5sum [path]
   (let [{:keys [out err exit] :as sh-result} (sh "md5sum" path)]
     (if (not= exit 0)
