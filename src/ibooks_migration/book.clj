@@ -9,7 +9,8 @@
 (defn file-extension [filename]
   (let [filename-parts (s/split filename #"\.")]
     (if (> (count filename-parts) 1)
-      (last filename-parts))))
+      (last filename-parts)
+      nil)))
 
 (defn valid-epub? [path]
   (let [f (io/file path)]

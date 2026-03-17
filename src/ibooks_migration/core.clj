@@ -4,6 +4,7 @@
             [ibooks-migration.config :as config]
             [ibooks-migration.db.ibooks :as ibooks-db]
             [ibooks-migration.db.migrator :as migrator-db]
+            [ibooks-migration.pipeline :as pipeline]
             [ibooks-migration.worker.core :as worker])
   (:import [java.util.concurrent Executors ThreadFactory]))
 
@@ -65,28 +66,19 @@
 (defn -main
   [& args]
   (let [{:keys [config]} (parse-cli-options args)
-        {:keys [ibooks-db-path
-                migrator-db-path
-                max-disk-space-usage
-                workers
-                destination]} (config/load-config! config)
-        remote-host (:host destination)
-        remote-root (:path destination)
-        send-book-fn (worker/shell-send-book-fn remote-host remote-root)]
-    (migrator-db/migrate! migrator-db-path)
-    (with-open [ibooks-db (ibooks-db/connect ibooks-db-path)
-                migrator-db (migrator-db/connect migrator-db-path)]
-      (let [pipeline (worker/start-pipeline!
-                      (worker/default-pipeline {:ibooks-db ibooks-db
-                                                :migrator-db migrator-db
-                                                :max-disk-space-usage max-disk-space-usage
-                                                :remote-host remote-host
-                                                :workers workers
-                                                :send-book-fn send-book-fn}))
-            shutdown-hook (Thread. #(worker/stop-pipeline! pipeline))]
+        cfg          (config/load-config! config)
+        remote       (-> cfg :workers :worker/uploader :remote)
+        send-book-fn (pipeline/send-book-fn (:host remote) (:path remote))]
+    (migrator-db/migrate! (:migrator-db-path cfg))
+    (with-open [ibooks-db   (ibooks-db/connect (:ibooks-db-path cfg))
+                migrator-db (migrator-db/connect (:migrator-db-path cfg))]
+      (let [running      (->> (pipeline/build cfg ibooks-db migrator-db send-book-fn)
+                             (worker/build)
+                             (worker/start!))
+            shutdown-hook (Thread. #(worker/stop! running))]
         (.addShutdownHook (Runtime/getRuntime) shutdown-hook)
         (try
-          (let [{:keys [errors]} (worker/await-pipeline!! pipeline {:log-fn log-event})]
+          (let [{:keys [errors]} (worker/await!! running {:log-fn log-event})]
             (when (seq errors)
               (throw (ex-info "Migration pipeline failed"
                               {:errors (mapv printable-event errors)}))))
