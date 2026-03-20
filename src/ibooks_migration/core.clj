@@ -5,7 +5,8 @@
             [ibooks-migration.db.ibooks :as ibooks-db]
             [ibooks-migration.db.migrator :as migrator-db]
             [ibooks-migration.pipeline :as pipeline]
-            [ibooks-migration.worker.core :as worker])
+            [ibooks-migration.worker.core :as worker]
+            [ibooks-migration.remote :as remote])
   (:import [java.util.concurrent Executors ThreadFactory]))
 
 (def ^:private core-async-worker-count
@@ -63,26 +64,52 @@
   (binding [*out* *err*]
     (prn (printable-event event))))
 
+(defn build [config ibooks-db migrator-db send-book-fn]
+  (deep-merge
+   {:worker/get-books        {:fn get-books-source
+                              :db        ibooks-db}
+    :worker/task-preparation {:fn prepare-task-handler
+                              :input      :worker/get-books
+                              :db         migrator-db}
+    :worker/task-throttler   {:fn throttle-task-handler
+                              :input      :worker/task-preparation
+                              :disk-usage (atom 0)}
+    :worker/downloader       {:fn download-task-handler
+                              :input      :worker/task-throttler}
+    :worker/epub-packer      {:fn pack-task-handler
+                              :input      :worker/downloader}
+    :worker/uploader         {:fn   upload-task-handler
+                              :input        :worker/epub-packer
+                              :send-book-fn send-book-fn}
+    :worker/cleaner          {:fn cleanup-task-handler
+                              :input      :worker/uploader}
+    :worker/finalizer        {:fn finalize-task-handler
+                              :input      :worker/cleaner
+                              :db         migrator-db}}
+   (or (:workers config) {})))
+
+
 (defn -main
   [& args]
-  (let [{:keys [config]} (parse-cli-options args)
-        cfg          (config/load-config! config)
-        remote       (-> cfg :workers :worker/uploader :remote)
-        send-book-fn (pipeline/send-book-fn (:host remote) (:path remote))]
-    (migrator-db/migrate! (:migrator-db-path cfg))
-    (with-open [ibooks-db   (ibooks-db/connect (:ibooks-db-path cfg))
-                migrator-db (migrator-db/connect (:migrator-db-path cfg))]
-      (let [running      (->> (pipeline/build cfg ibooks-db migrator-db send-book-fn)
-                             (worker/build)
-                             (worker/start!))
-            shutdown-hook (Thread. #(worker/stop! running))]
-        (.addShutdownHook (Runtime/getRuntime) shutdown-hook)
-        (try
-          (let [{:keys [errors]} (worker/await!! running {:log-fn log-event})]
-            (when (seq errors)
-              (throw (ex-info "Migration pipeline failed"
-                              {:errors (mapv printable-event errors)}))))
-          (finally
-            (try
-              (.removeShutdownHook (Runtime/getRuntime) shutdown-hook)
-              (catch IllegalStateException _))))))))
+  (let [config (-> args parse-cli-options config/load-config!)
+        {:keys [host path]} (-> config :workers :worker/uploader :remote)
+        send-fn (partial remote/send-file host path)
+        ibooks-ds   (-> config :ibooks-db-path   ibooks-db/create-datasource)
+        migrator-ds (-> config :migrator-db-path migrator-db/create-datasource)]
+    (-> config :migrator-db-path migrator-db/migrate!)
+    (let [running (->> (pipeline/build config ibooks-ds migrator-ds send-fn)
+                       (worker/build)
+                       (worker/start!))
+          shutdown-hook (Thread. #(worker/stop! running))]
+      (.addShutdownHook (Runtime/getRuntime) shutdown-hook)
+      (try
+        (let [{:keys [errors]} (worker/await!! running {:log-fn log-event})]
+          (when (seq errors)
+            (throw (ex-info "Migration pipeline failed"
+                            {:errors (mapv printable-event errors)}))))
+        (finally
+          (try
+            (.removeShutdownHook (Runtime/getRuntime) shutdown-hook)
+            (catch IllegalStateException _)))))))
+
+;; pipeline-config -> built -> start -> supervise

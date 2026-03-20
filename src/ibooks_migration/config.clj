@@ -56,7 +56,7 @@
                                                   [:host [:string {:min 1}]]
                                                   [:path [:string {:min 1}]]]]])]
       [:worker/cleaner          (worker-schema :worker/cleaner)]
-      [:worker/finalizer        (worker-schema :worker/finalizer)]]]]]))
+      [:worker/finalizer        (worker-schema :worker/finalizer)]]]]))
 
 (def ^:private humanize-options
   {:errors

@@ -12,8 +12,8 @@
 (defn migrate! [path]
   (migratus/migrate (migratus-config path)))
 
-(defn connect [path]
-  (jdbc/get-connection (format "jdbc:sqlite:%s" path)))
+(defn create-datasource [path]
+  (jdbc/get-datasource (format "jdbc:sqlite:%s" path)))
 
 (defn task-done! [db {:keys [guid]}]
   (let [q (h/format {:insert-into [:task]
