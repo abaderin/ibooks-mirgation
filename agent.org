@@ -209,6 +209,153 @@ iBooks.app на уделанный сервер с помощью ssh/scp
   4. получать исключение жопа - надо все оборачивать. жопа говно. если получили исключение - надо сформировать из него
      событие и отправить в evt-ch и выйти
   5. если получили значение - надо пытаться утолкать его в out-ch не блокируясь
+- [ ] воркер троттлер
+  описание FSM:
+  #+begin_src clojure
+    (def states
+      [:task-waiting
+       :size-calculation
+       :disk-space-reservation
+       :disk-space-release-waiting
+       :task-forwarding
+       :task-error-forwarding
+       :stopping
+       :stopped
+       :failed])
+  #+end_src
+  - :task-awaiting
+    channels: [cmd-ch, in-ch]
+    transitions: [:stopping :size-calculation]
+
+    cmd-ch -> nil (closed):
+      in this implementation is not reasonable to handle this
+      this case should never happen
+
+    cmd-ch -> *command*:
+      now only one is possible - :stop and action is to transit into :stopping
+
+    in-ch -> nil (closed):
+      transit to :stopping (reason - nothing to do)
+
+    in-ch -> task:
+      can it fail? no, it only reads channel and makes a transition
+
+  - :size-calculation
+    async/go fs-size and then
+    channels: [cmd-ch, fs-size-ch]
+    transitions: [:disk-space-reservation :task-error-forwarding :stopping]
+
+    fs-size-ch -> exception
+      one of possible actions is to signalize about it
+      dont think exception is a enough reason to stop worker
+      better lets forward it to error-ch
+      -> :task-error-forwarding
+
+    fs-size-ch -> size
+      put it into task under :size key, if epub - x2
+      and transit to :size
+
+    cmd-ch = same behaviour
+
+  - :disk-space-reservation
+    non blocking behaviour
+    channels: []
+    transitions: [:task-forwarding :disk-space-release-waiting]
+
+    if task-size > max-disk-space-usage -> :task-error-forwarding
+    if enough                           -> :task-forwarding
+    if not                              -> :disk-space-release-waiting
+
+  - :disk-space-release-waiting
+    channels: [cmd-ch disk-space-release-ch]
+    transitions: [:disk-space-reservation :stopping]
+
+    disk-space-release-ch -> number
+    decrease current disk space usage and go to :disk-space-reservation
+
+  - :task-forwarding
+    sent task to out-ch and wait for message from task-forward-done-ch
+    channels: [cmd-ch task-forward-done-ch]
+    transitions: [:stopping :task-waiting]
+
+  - :task-error-forwarding
+    sends task processing exception to error-ch
+
+  - :stopping
+    do everything you need to clean and transit to :stopped
+
+  - :stopped
+    sent stopped event to evt-ch
+
+  - :failed
+    sent failed event to evt-ch
+
+  states:
+  - :waiting-task - cmd-ch in-ch
+    тут все понятно, выполняется оба условия - команда не игнорируется, получаем таску
+
+  - :calculating-size - cmd-ch result-ch
+    запускаем тред, который вызовет диск и посчитает место
+    если epub -> x2
+    тред возвращает канал - мы его добавим в стейт и его же будем слушать (fs-size-ch)
+
+  - :calculating-size-done - cmd-ch fs-size-ch
+    пробуем резервировать - если места хватает - меняем стейт и переходим в :forwarding-task
+    если не хватает - переходим в :not-enough-space
+
+  - :reserving-space - без каналов, никаких блокировок
+    если хватает - резервируем и на :forwarding-task
+    в ином случае - :not-enough-space
+
+  - :not-enough-space - cmd-ch space-freed-up-ch
+    тут все просто - получаем space-freed-up-ch и переходим в :reserving-space
+
+  - :forwarding-task - без каналов, просто отправка в горутине
+    горутиной пинаем сообщение в out-ch и ждем подтверждение этого в forwarding-task-done-ch
+    переходим в :waiting-task
+
+  - :forwarding-task-done - cmd-ch, forwarding-task-done
+
+  каким образом? каналы позволяют реализовать событийную модель, но это лишь один из подходов и он не всегда оправдан
+  нет ничего плохого в блокировке гоурутины в принципе, однако она должна уметь завершаться если мы получаем
+  команду остановки.
+  ладно, доделаю как есть, а после уже буду анализировать. но сейчас пахнет откровенным переусложнением.
+  а вообще - линукс к примеру блокирует процессы наглухо в ряде случаев и бывает даже ОС не может остановиться пока
+  какие то сервисы не завершат корректно свою работу. в общем случае ты не знаешь что будет если ты остановишь сервис
+  некорректно. к примеру, когда рассуждаешь об этом по отношению к базе данных никто тебе не гарантирует целостность
+  данных кроме как база и ты обязан ждать пока она не вернет тебе управление
+
+  что делаем с троттлером?
+  есть несколько каналов:
+  - команд
+  - входной с задачами
+  - входной с событиями "место освободилось"
+  - выходной - "место занято"
+  - атом или локальный стейт с занятым местом
+  - настройка - предельное занятое место
+
+  причина для итерации - команда или изменение стейта которое надо зафиксировать
+  когда мы получаем задачу из канала - мы ее обратно туда уже не затолкаем. следовательно брать надо и
+  до тех пор пока она не протолкнется - блокироваться. но не для обработки команд
+  можно варьировать каналы в списке atls - если задача есть - убрать in-ch и ждать каналов которые урежут?
+
+  последовательность действий:
+  - получаем задачу
+  - считаем размер, который нужно выделить. если это epub - резервируем x2
+  - можем сейчас место выделить? - если да то вычитаем и отправляем задачу дальше
+  - если нет - ждем освобождения места - только так.
+
+  если рассматривать изолированно - для нас недопустимы блокировки
+  первая причина блокировки - ожидание задачи из канала
+  вторая - недостаток места и ожидание событий о освобождении
+  третья - отправка таски дальше
+
+  то есть мы имеем дело с автоматом в данном случае?
+  то есть у нас изначальное состояние - :task-wait - по флоу мы ставим асинхронное ожидание таски и при получении
+  отправляем в канал internal-events {:event :task-received :task task}
+  на след итерации мы получаем из канала :task-received и наше действие - попробовать выделить место
+
+  FSM!
 
   слушаем [cmd-ch result-ch result-send-ch] - блокируемся. но в таком случае мы не начнем работу
   значит надо что сделать? не блокироваться?
@@ -216,6 +363,8 @@ iBooks.app на уделанный сервер с помощью ssh/scp
   если результат обработки получен - разбираемся что там и либо отвечаем ошибкой либо отправляем в out и ждем
   отправку через result-send-ch
   можно сделать канал задачи еще. ну пиздец, нагромождение какое то получается
+
+* 
 
 * Черновик (не учитывать в работе):
 ** clj-condo:

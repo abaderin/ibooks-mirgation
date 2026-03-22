@@ -13,7 +13,6 @@
     (a/>!! task-ch {})
     (a/go-loop []
       (let [[v ch] (a/alts! [cmd-ch result-ch task-ch] :priority true)]
-        (println v)
         (cond
           (= ch cmd-ch) (case v
                           :stop (a/>! evt-ch {:kind :stopped}))

@@ -4,26 +4,6 @@
             [ibooks-migration.task :as task]
             [ibooks-migration.book :refer [file-name file-extension]]))
 
-(def f (future (throw (ex-info "Check" {}))))
-
-(defn prepare-task-handler [record {:keys [db events-ch worker worker-index]}]
-  (let [t    (task/ibooks-record->task record)
-        path (:path t)
-        ext  (-> path file-name file-extension)
-        skip #(do (runtime/emit!! events-ch {:event        :task-skipped
-                                             :reason       %
-                                             :worker       worker
-                                             :worker-index worker-index})
-                  nil)]
-    (cond
-      (db-migrator/task-done? db t)  (skip :already-done)
-      (not (book/book-exists? path)) (skip :path-not-found)
-      (= ext "ibooks")               nil
-      (= ext "epub")                 (assoc t :format   :epub
-                                            :src-path (format "/tmp/%s" (book/file-name path)))
-      (= ext "pdf")                  (assoc t :format :pdf :src-path path)
-      :else                          nil)))
-
 (defn throttle-task-handler [task {:keys [command-ch disk-usage max-disk-space-usage]}]
   (let [size (book/fs-size (:path task))]
     (runtime/reserve-space!! command-ch disk-usage size max-disk-space-usage)
