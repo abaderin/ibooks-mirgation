@@ -1,16 +1,10 @@
 (ns ibooks-migration.pipeline.workers.throttle-tasks
   (:require [clojure.core.async :as a]
-            [ibooks-migration.book :refer [fs-size]]
             [clojure.set :refer [difference]]
-            [clojure.pprint :refer [pprint]]))
-
-;; begin -- cmd-ch handling
-(defmulti handle-cmd (fn [kind _] kind))
-
-(defmethod handle-cmd :stop [_ {:keys [evt-ch] :as state}]
-  (a/>! evt-ch {:kind :stopping})
-  (assoc state :state :stopping))
-;; end   -- cmd-ch handling
+            [clojure.pprint :refer [pprint]]
+            [ibooks-migration.pipeline.workers.core
+             :as workers
+             :refer [run-in-io-thread]]))
 
 (def allowed-transitions
   {:task-waiting               #{:size-calculation :stopping}
@@ -23,37 +17,33 @@
    :stopped                    #{}
    :failed                     #{}})
 
-(defn terminal-state? [allowed-transitions state]
-  (let [terminal-states (->> allowed-transitions
-                             keys
-                             (filter #(empty? (% allowed-transitions)))
-                             set)]
-    (contains? terminal-states state)))
+(def transit (partial workers/transit allowed-transitions))
 
-(defn valid-transitions-map? [transitions-map]
-  (let [source-states (set (keys transitions-map))]
-    (every?
-     (fn [[_ target-states]]
-       (every? source-states target-states))
-     transitions-map)))
+;; begin -- cmd-ch handling
+(defmulti handle-cmd (fn [kind _] kind))
 
-(assert (valid-transitions-map? allowed-transitions) "allowed-transitions in incorrect state")
-
-(defn transit [{:keys [state] :as s} to-state]
-  (assert (keyword? (-> allowed-transitions state to-state))
-          (format "incorrent-transition %s -> %s" state to-state))
-  (assoc s :state to-state))
+(defmethod handle-cmd :stop [_ {:keys [evt-ch] :as state}]
+  (a/>! evt-ch {:kind :stopping})
+  (transit state :stopping))
+;; end   -- cmd-ch handling
 
 (defmulti handle-state :state)
 
-(defmethod handle-state :task-waiting [{:keys [cmd-ch in-ch evt-ch] :as state}]
+(defmethod handle-state :task-waiting [{:keys [cmd-ch in-ch] :as s}]
   (let [[v ch] (a/alts! [cmd-ch in-ch] :priority true)]
     (cond
-      (= ch cmd-ch) (handle-cmd v state)
+      (= ch cmd-ch) (handle-cmd v s)
 
-      (= ch in-ch) (assoc state
-                          :state :calculating-size
-                          :task v))))
+      (= ch in-ch)
+
+      (if (nil? v)
+        ;; task is nil - channel closed. reasanoble to free resources and do
+        ;; green worker shutdown
+        (transit s :stopping)
+        ;; if task is not nil
+        (-> s
+            (assoc :task v)
+            (transit :size-calculation))))))
 
 (defn task-set-size [size task]
   (let [size (case (-> task :format)
@@ -63,10 +53,8 @@
 
 (defmethod handle-state :size-calculation [{:keys [cmd-ch] :as s}]
   (let [path (-> s :task :path)
-        calculated-size-ch (a/go
-                             (try
-                               (fs-size path)
-                               (catch Throwable e e)))
+        size-fn (get-in s [:deps :size-fn])
+        calculated-size-ch (run-in-io-thread :nil size-fn path)
         [v ch] (a/alts! [cmd-ch calculated-size-ch] :priority true)]
     (cond
       (= ch cmd-ch) (handle-cmd v s)
@@ -97,12 +85,12 @@
 
       ;; if we have not enough free space - wait till it be available
       (> (+ task-size current-disk-space-usage) max-disk-space-usage)
-      (assoc :state :disk-space-release-waiting)
+      (transit s :disk-space-release-waiting)
 
       :else
       (-> s
           (assoc :current-disk-space-usage (+ current-disk-space-usage task-size))
-          (assoc :state :task-forwarding)))))
+          (transit :task-forwarding)))))
 
 (defmethod handle-state :disk-space-release-waiting [{:keys [disk-space-release-ch cmd-ch] :as s}]
   (let [[v ch] (a/alts! [cmd-ch disk-space-release-ch] :priority true)]
@@ -111,33 +99,45 @@
 
       (= ch disk-space-release-ch)
 
-      (assoc s :current-disk-space-usage (-> s :current-disk-space-usage (- v))))))
+      (-> s
+          (assoc :current-disk-space-usage (-> s :current-disk-space-usage (- v)))
+          (transit :disk-space-reservation)))))
 
 (defmethod handle-state :task-forwarding [{:keys [cmd-ch out-ch task] :as s}]
-  (let [task-forwarded-ch (a/go (a/>! out-ch task))
-        [v ch] (a/alts! [cmd-ch task-forwarded-ch] :priority true)]
+  (let [[v ch] (a/alts! [cmd-ch [out-ch task]] :priority true)]
     (cond
       (= ch cmd-ch) (handle-cmd v s)
 
-      (= ch task-forwarded-ch) (transit s :task-waiting))))
+      (= ch out-ch) (if (true? v)
+                      (transit s :task-waiting)
+                      (-> s
+                          (assoc :reason {:state :task-forwarding
+                                          :message "out-ch is closed"})
+                          (transit :failed))))))
 
 (defmethod handle-state :task-error-forwarding [{:keys [cmd-ch task-error-ch task] :as s}]
-  (let [task-error-forwarded-ch (a/go (a/>! task-error-ch task))
-        [v ch] (a/alts! [cmd-ch task-error-forwarded-ch] :priority true)]
+  (let [[v ch] (a/alts! [cmd-ch [task-error-ch task]] :priority true)]
     (cond
       (= ch cmd-ch) (handle-cmd v s)
 
-      (= ch task-error-ch) (transit s :task-waiting))))
+      (= ch task-error-ch) (if (true? v)
+                             (transit s :task-waiting)
+                             (-> s
+                                 (assoc :reason {:state :task-error-forwarding
+                                                 :message "task-error-ch is closed"})
+                                 (transit :failed))))))
 
 (defmethod handle-state :stopping [s]
   (throw (ex-info "Not implemented" {}))
   (transit s :stopped))
 
 (defmethod handle-state :stopped [{:keys [evt-ch]}]
-  (a/>! evt-ch {:kind :stopped}))
+  (a/>! evt-ch {:kind :stopped})
+  nil)
 
 (defmethod handle-state :failed [{:keys [evt-ch]}]
-  (a/>! evt-ch {:kind :failed}))
+  (a/>! evt-ch {:kind :failed})
+  nil)
 
 (defn throttle-tasks-worker
   [{:keys [max-disk-space-usage
@@ -150,18 +150,8 @@
            task-error-ch] :as params}]
   (let [initial-state (merge params
                              {:state :task-waiting
-                              :current-disk-space-usage 0})]
+                              :current-disk-space-usage 0
+                              :worker :throttle-tasks})]
     (a/go-loop [state initial-state]
-      (when-not (terminal-state? allowed-transitions (:state state))
-        (recur (handle-state state))))))
-
-(let [declared-states (-> allowed-transitions keys set)
-      handled-states (-> handle-state methods keys set)
-      unhandled-states (difference declared-states handled-states)
-      undeclared-states (difference handled-states declared-states)]
-  (when-not (empty? unhandled-states)
-    (pprint unhandled-states))
-  (assert (empty? unhandled-states) "You have states which has not been implemented, dumb ass")
-  (when-not (empty? undeclared-states)
-    (pprint undeclared-states))
-  (assert (empty? undeclared-states) "You have implementations for states which are not used, dumb ass"))
+      (when-let [next-state (handle-state state)]
+        (recur next-state)))))

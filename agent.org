@@ -186,7 +186,7 @@ iBooks.app на уделанный сервер с помощью ssh/scp
   Реализуй функцию определения размера файла/файлов лежащих по path (аргумент) - (defn fs-size [path])
   если path - директория - вызови + рекурсивно по списку файлов внутри, если файл - верни размер в байтах.
   Стандартная рекурсивная функция.
-- [X] Доработка конфигурации
+- [-] Доработка конфигурации
   Я прописал пример конфига в run/config.edn
   Я создал src/ibooks_migration/config.clj - весь код связанный с парсингом и валидацией конфига пиши в него
   - [X] проверь его формат, все ли аргументы в нем указаны? если нет - останови свою работу и запроси изменение
@@ -209,7 +209,32 @@ iBooks.app на уделанный сервер с помощью ssh/scp
   4. получать исключение жопа - надо все оборачивать. жопа говно. если получили исключение - надо сформировать из него
      событие и отправить в evt-ch и выйти
   5. если получили значение - надо пытаться утолкать его в out-ch не блокируясь
-- [ ] воркер троттлер
+- [X] get-books worker
+  - :row-retrieving - async/io-thread
+  - :row-forwardingo
+  - :stopping
+  - :stopped
+  - :failed
+- [ ] обработка ошибок
+  пока что в обработке ошибок бардак. в чем суть бардака - у нас два вида ошибок может быть:
+  - ошибки при обработке конкретной таски - папка/файл отсутствует, упала заливка файла и мало ли что еще
+    ошибки в целом на таких объемах данных надо куда то логировать, чтобы потом к ним вернуться. этим
+    должен заниматься отдельный воркер
+  - ошибки воркера - какие то нарушения в логике. состояние из которого нельзя перейти дальше. в таком случае воркер
+    имеет право упасть но обязан рапортовать об этом.
+
+  при неразрешимых проблемах воркер переходит в failed состояние. должно быть сформировано сообщение об ошибке.
+  и его куда то надо закинуть.
+  сообщение - что в него надо закинуть?
+  1. код ошибки - keyword. все коды должны быть определены в одном месте
+  2. контекст - сюда могут попасть все данные. однако эти данные по нормальному должны дополняться по мере всплывания
+     ошибки вверх по каналам до основного супервизора. значит надо включать локальный контекст
+
+  воркер не закрывает никакие полученные извне каналы самостоятельно. принцип такой - кто создал тот и освобождает.
+  воркер не полагается на предположения о среде исполнения. воркер не делает предположений к примеру о том что
+  канал
+- [X] воркер троттлер
+  
   описание FSM:
   #+begin_src clojure
     (def states
@@ -363,8 +388,84 @@ iBooks.app на уделанный сервер с помощью ssh/scp
   если результат обработки получен - разбираемся что там и либо отвечаем ошибкой либо отправляем в out и ждем
   отправку через result-send-ch
   можно сделать канал задачи еще. ну пиздец, нагромождение какое то получается
+- [X] prepare-tasks воркер
+- [X] downloader
+- [X] epub-packer
+- [X] uploader
+- [X] cleaner
+- [X] finalizer
 
-* 
+* В коде очень много дублирований, надо переделать. Процентов 80 кода - нарушение DRY
+
+** Типичные шаги воркера
+
+#+begin_src clojure
+  (require '[ibooks-migration.pipeline.workers.cleaner :as cleaner-worker])
+  (require '[ibooks-migration.pipeline.workers.downloader :as downloader-worker])
+  (require '[ibooks-migration.pipeline.workers.epub-packer :as epub-packer-worker])
+  (require '[ibooks-migration.pipeline.workers.finalizer :as finalizer-worker])
+  (require '[ibooks-migration.pipeline.workers.get-books :as get-books-worker])
+  (require '[ibooks-migration.pipeline.workers.prepare-task :as prepare-task-worker])
+  (require '[ibooks-migration.pipeline.workers.throttle-tasks :as throttle-tasks-worker])
+  (require '[ibooks-migration.pipeline.workers.uploader :as uploader-worker])
+
+  (def states
+    (->> [cleaner-worker/allowed-transitions
+          downloader-worker/allowed-transitions
+          epub-packer-worker/allowed-transitions
+          finalizer-worker/allowed-transitions
+          get-books-worker/allowed-transitions
+          prepare-task-worker/allowed-transitions
+          throttle-tasks-worker/allowed-transitions
+          uploader-worker/allowed-transitions]
+          (map keys)
+          flatten
+          set))
+
+  states
+#+end_src
+Доменные шаги
+:checking-task-already-done
+:checking-path-exists
+:size-calculation
+:disk-space-reservation
+:disk-space-release-waiting
+:starting-download
+:waiting-download-completed
+:packing-epub
+:uploading-book
+:calculating-local-md5
+:calculating-remote-md5
+:cleaning-epub
+:starting-icloud-eviction
+:checking-icloud-eviction-completed
+:waiting-icloud-eviction-completed
+:marking-task-done
+
+Сервисные шаги, отношения к бизнес логике не имеют
+:forwarding-task
+:task-waiting
+:task-error-forwarding
+:receiving-task
+:row-forwarding
+:stopping
+:stopped
+:row-retrieving
+:failed
+:task-forwarding
+
+Не все шаги про то чтобы:
+- достать таску из канала
+- запустить нужную функцию
+- отдать результат в какой то канал
+
+*** Получение задачи из канала
+- слушаем cmd-ch / in-ch
+- cmd-ch обрабатывает в данный момент только :stop команду. все что нужно - функцию которая получит
+  state и произведет очистку перед остановкой.
+- in-ch дает таску и нужно выполнить io bound or cpu bound job - тоже типичная штука. в общем случае это
+  будет просто функцией, которая получит state, выполнит задачу и вернет новый стейт полагаю? мммм, по идее да,
+  но 
 
 * Черновик (не учитывать в работе):
 ** clj-condo:

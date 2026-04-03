@@ -43,10 +43,15 @@
   (let [{:keys [out err exit] :as sh-result} (sh "md5sum" path)]
     (if (not= exit 0)
       (throw (ex-info err (merge {:path path} sh-result)))
-      (-> out (s/split #"\s+") first))))
+      (-> out (s/split #"\s+") first parse-long))))
 
 (defn ssh-md5sum [host path]
   (let [{:keys [out err exit] :as sh-result} (sh "ssh" host (format "md5sum '%s'" path))]
     (if (not= exit 0)
       (throw (ex-info err (merge {:path path} sh-result)))
-      (-> out (s/split #"\s+") first))))
+      (-> out (s/split #"\s+") first parse-long))))
+
+(defn rm [path]
+  (let [{:keys [out err exit] :as sh-result} (sh "rm" path)]
+    (when-not (= exit 0)
+      (throw (ex-info err (merge {:path path} sh-result))))))

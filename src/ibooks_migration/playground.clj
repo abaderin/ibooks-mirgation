@@ -9,8 +9,31 @@
             [ibooks-migration.db.ibooks :as db-ibooks]
             [ibooks-migration.epub :refer [epubcheck pack-epub! epubcheck-exp]]
             [ibooks-migration.book :refer [file-name]]
-            [ibooks-migration.pipeline.workers.get-books :as get-books-worker])
+            [ibooks-migration.pipeline.workers.cleaner :as cleaner-worker]
+            [ibooks-migration.pipeline.workers.downloader :as downloader-worker]
+            [ibooks-migration.pipeline.workers.epub-packer :as epub-packer-worker]
+            [ibooks-migration.pipeline.workers.finalizer :as finalizer-worker]
+            [ibooks-migration.pipeline.workers.get-books :as get-books-worker]
+            [ibooks-migration.pipeline.workers.prepare-task :as prepare-task-worker]
+            [ibooks-migration.pipeline.workers.throttle-tasks :as throttle-tasks-worker]
+            [ibooks-migration.pipeline.workers.uploader :as uploader-worker])
   (:import [java.util UUID]))
+
+(def states
+  (->> [cleaner-worker/allowed-transitions
+        downloader-worker/allowed-transitions
+        epub-packer-worker/allowed-transitions
+        finalizer-worker/allowed-transitions
+        get-books-worker/allowed-transitions
+        prepare-task-worker/allowed-transitions
+        throttle-tasks-worker/allowed-transitions
+        uploader-worker/allowed-transitions]
+       (map keys)
+       flatten
+       set))
+
+states
+
 
 (defn parse-uuid [u]
   (try
