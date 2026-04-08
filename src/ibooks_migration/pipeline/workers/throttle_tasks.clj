@@ -45,6 +45,23 @@
             (assoc :task v)
             (transit :size-calculation))))))
 
+(defmethod handle-state :task-waiting [{:keys [cmd-ch in-ch] :as s}]
+  (let [[v ch] (a/alts! [cmd-ch in-ch] :priority true)]
+    (cond
+      (= ch cmd-ch) (handle-cmd v s)
+
+      (= ch in-ch)
+
+      (if (nil? v)
+        ;; task is nil - channel closed. reasanoble to free resources and do
+        ;; green worker shutdown
+        (transit s :stopping)
+        ;; if task is not nil
+        (-> s
+            (assoc :task v)
+            (transit :size-calculation))))))
+
+
 (defn task-set-size [size task]
   (let [size (case (-> task :format)
                :epub (* 2 size)

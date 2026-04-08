@@ -22,14 +22,6 @@
 
 (def transit (partial workers/transit allowed-transitions))
 
-;; begin -- cmd-ch handling
-(defmulti handle-cmd (fn [kind _] kind))
-
-(defmethod handle-cmd :stop [_ {:keys [evt-ch] :as state}]
-  (a/>! evt-ch {:kind :stopping})
-  (transit state :stopping))
-;; end   -- cmd-ch handling
-
 (defmulti handle-state :state)
 
 (defmethod handle-state :receiving-task [{:keys [cmd-ch in-ch] :as s}]
